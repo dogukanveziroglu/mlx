@@ -468,10 +468,20 @@ void sdpa_vector_2pass(
       }
     }
   } else {
-    if (n_simds >= 4) {
-      blocks = 64;
+    // Variant B (Broad): Comprehensive N-aware scaling for all moderate n_simds
+    if (n_simds <= 1) {
+      if (N <= 2048) blocks = 32;
+      else if (N <= 8192) blocks = 64;
+      else blocks = 128;
+    } else if (n_simds >= 4 && n_simds <= 16) {
+      if (N >= 131072) blocks = 1024;
+      else if (N >= 65536) blocks = 512;
+      else if (N >= 32768) blocks = 256;
+      else if (N >= 16384) blocks = 128;
+      else if (N >= 8192) blocks = 64;
+      else blocks = 32;
     } else {
-      blocks = 32;
+      blocks = (n_simds >= 4) ? 64 : 32;
     }
   }
   size_t k_head_stride = k.shape(1) == 1 ? k.strides(0) : k.strides(1);
