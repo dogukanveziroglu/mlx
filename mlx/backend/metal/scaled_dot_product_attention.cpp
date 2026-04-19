@@ -1,4 +1,5 @@
 // Copyright © 2024 Apple Inc.
+#include <cstdlib>
 #include <sstream>
 
 #include "mlx/backend/common/compiled.h"
@@ -42,6 +43,24 @@ void sdpa_full_self_attention_nax(
 
   int qL = q.shape(2);
   int kL = k.shape(2);
+
+  // Opt-in guard against the macOS GPU watchdog. A single steel_attention
+  // dispatch at very long kL can exceed the ~5s watchdog and terminate the
+  // process. Disabled by default; set MLX_SDPA_MAX_KL to a key length cap
+  // (e.g. 65536) to enable.
+  static const int64_t kSdpaWatchdogThreshold = []() {
+    const char* env = std::getenv("MLX_SDPA_MAX_KL");
+    return env ? std::atoll(env) : INT64_MAX;
+  }();
+  if (kL > kSdpaWatchdogThreshold) {
+    std::ostringstream msg;
+    msg << "[sdpa_full_self_attention] Key length kL=" << kL
+        << " exceeds MLX_SDPA_MAX_KL=" << kSdpaWatchdogThreshold << ". "
+        << "A single Metal dispatch at this size may exceed the macOS GPU "
+        << "watchdog (~5s) and terminate the process. Either raise the "
+        << "limit or chunk your prefill.";
+    throw std::runtime_error(msg.str());
+  }
 
   const bool align_Q = (qL % bq) == 0;
   const bool align_K = (kL % bk) == 0;
@@ -205,6 +224,24 @@ void sdpa_full_self_attention_metal(
 
   int qL = q.shape(2);
   int kL = k.shape(2);
+
+  // Opt-in guard against the macOS GPU watchdog. A single steel_attention
+  // dispatch at very long kL can exceed the ~5s watchdog and terminate the
+  // process. Disabled by default; set MLX_SDPA_MAX_KL to a key length cap
+  // (e.g. 65536) to enable.
+  static const int64_t kSdpaWatchdogThreshold = []() {
+    const char* env = std::getenv("MLX_SDPA_MAX_KL");
+    return env ? std::atoll(env) : INT64_MAX;
+  }();
+  if (kL > kSdpaWatchdogThreshold) {
+    std::ostringstream msg;
+    msg << "[sdpa_full_self_attention] Key length kL=" << kL
+        << " exceeds MLX_SDPA_MAX_KL=" << kSdpaWatchdogThreshold << ". "
+        << "A single Metal dispatch at this size may exceed the macOS GPU "
+        << "watchdog (~5s) and terminate the process. Either raise the "
+        << "limit or chunk your prefill.";
+    throw std::runtime_error(msg.str());
+  }
 
   const bool align_Q = (qL % bq) == 0;
   const bool align_K = (kL % bk) == 0;
@@ -468,10 +505,29 @@ void sdpa_vector_2pass(
       }
     }
   } else {
-    if (n_simds >= 4) {
-      blocks = 64;
+    // Variant B (Broad): Comprehensive N-aware scaling for all moderate n_simds
+    if (n_simds <= 1) {
+      if (N <= 2048)
+        blocks = 32;
+      else if (N <= 8192)
+        blocks = 64;
+      else
+        blocks = 128;
+    } else if (n_simds >= 4 && n_simds <= 16) {
+      if (N >= 131072)
+        blocks = 1024;
+      else if (N >= 65536)
+        blocks = 512;
+      else if (N >= 32768)
+        blocks = 256;
+      else if (N >= 16384)
+        blocks = 128;
+      else if (N >= 8192)
+        blocks = 64;
+      else
+        blocks = 32;
     } else {
-      blocks = 32;
+      blocks = (n_simds >= 4) ? 64 : 32;
     }
   }
   size_t k_head_stride = k.shape(1) == 1 ? k.strides(0) : k.strides(1);
