@@ -644,7 +644,15 @@ void fft_op(
         std::max(threadgroup_batch_size, MIN_COALESCE_WIDTH);
   }
   int threadgroup_mem_size = next_power_of_2(threadgroup_batch_size * fft_size);
-  // FFTs up to 2^20 are currently supported
+  // Cap threadgroup_mem_size to MAX_STOCKHAM_FFT_SIZE to avoid requesting a
+  // kernel that was not instantiated. This can happen during four_step
+  // recursive calls where fft_size=2048/4096 combined with COALESCE_WIDTH=4
+  // would yield a memory size of 8192/16384.
+  if (threadgroup_mem_size > MAX_STOCKHAM_FFT_SIZE) {
+    threadgroup_batch_size = std::max(MAX_STOCKHAM_FFT_SIZE / fft_size, 1);
+    threadgroup_mem_size = next_power_of_2(threadgroup_batch_size * fft_size);
+  }
+  // FFTs up to 2^22 supported (2^23+ has separate silent corruption bug)
   assert(threadgroup_mem_size <= MAX_STOCKHAM_FFT_SIZE);
 
   // ceil divide
