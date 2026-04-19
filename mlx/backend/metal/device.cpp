@@ -290,6 +290,18 @@ void CommandEncoder::set_input_array(
     const array& a,
     int idx,
     int64_t offset /* = 0 */) {
+  // Guard against a null MTLBuffer (e.g. a lazy or mmap'd array that has
+  // not yet been promoted to Metal storage). Without this, Metal's
+  // setBuffer call would crash with EXC_BAD_ACCESS at 0x0.
+  if (a.buffer().ptr() == nullptr) {
+    std::ostringstream msg;
+    msg << "[CommandEncoder::set_input_array] Input array has null Metal "
+        << "buffer (data_size=" << a.data_size() << ", dtype=" << a.dtype()
+        << "). The array may not have been evaluated or its Metal storage "
+        << "was released. Call mx.eval(array) before use, or check that "
+        << "lazy weights are promoted to Metal storage.";
+    throw std::runtime_error(msg.str());
+  }
   if (all_inputs_.insert(a.buffer().ptr()).second) {
     buffer_sizes_ += a.data_size();
   }
