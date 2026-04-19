@@ -16,6 +16,29 @@ namespace mx = mlx::core;
 namespace nb = nanobind;
 using namespace nb::literals;
 
+// CPU mirror of mlx::core::random::threefry2x32_hash from
+// mlx/backend/cpu/threefry.cpp. Inlined here so the default PRNG key can
+// be advanced without launching a GPU split kernel for each random call.
+// A tight loop of unevaluated random calls would otherwise accumulate a
+// long lazy chain of split kernels that all run on the next eval.
+static inline std::pair<uint32_t, uint32_t>
+threefry2x32_cpu(uint32_t k1, uint32_t k2, uint32_t c1, uint32_t c2) {
+  constexpr uint32_t rotations[2][4] = {{13, 15, 26, 6}, {17, 29, 16, 24}};
+  uint32_t ks[3] = {k1, k2, k1 ^ k2 ^ 0x1BD11BDAu};
+  uint32_t x = c1 + ks[0];
+  uint32_t y = c2 + ks[1];
+  for (int i = 0; i < 5; ++i) {
+    for (auto r : rotations[i % 2]) {
+      x += y;
+      y = (y << r) | (y >> (32 - r));
+      y ^= x;
+    }
+    x += ks[(i + 1) % 3];
+    y += ks[(i + 2) % 3] + i + 1;
+  }
+  return {x, y};
+}
+
 class PyKeySequence {
  public:
   ~PyKeySequence() {
@@ -34,6 +57,22 @@ class PyKeySequence {
   }
 
   mx::array next() {
+    // Advance the key on the CPU when it is a plain (2,) uint32 array,
+    // which is the common case after seed() or after a previous CPU-side
+    // next(). This avoids launching a GPU split kernel per call and keeps
+    // the lazy graph from growing when random results are not evaluated.
+    auto& cur = nb::cast<mx::array&>(state()[0]);
+    if (cur.dtype() == mx::uint32 && cur.shape() == mx::Shape{2} &&
+        cur.is_available()) {
+      auto* k_data = cur.data<uint32_t>();
+      uint32_t k1 = k_data[0];
+      uint32_t k2 = k_data[1];
+      auto rb02 = threefry2x32_cpu(k1, k2, 0, 2);
+      auto rb13 = threefry2x32_cpu(k1, k2, 1, 3);
+      state()[0] = mx::array({rb02.first, rb13.first}, mx::uint32);
+      return mx::array({rb02.second, rb13.second}, mx::uint32);
+    }
+    // Fallback for unusual user-supplied state shapes or lazy keys.
     auto out = mx::random::split(nb::cast<mx::array>(state()[0]));
     state()[0] = out.first;
     return out.second;
