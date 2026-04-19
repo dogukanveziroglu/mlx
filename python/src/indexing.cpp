@@ -73,8 +73,17 @@ void get_slice_params(
 
 mx::array get_int_index(nb::object idx, int axis_size) {
   int idx_ = safe_to_int32(idx);
+  int orig = idx_;
   idx_ = (idx_ < 0) ? idx_ + axis_size : idx_;
-
+  // Bounds-check after negative wrapping. Without this an out-of-range
+  // index would silently produce a degenerate slice and surface as an
+  // unrelated downstream error (e.g. squeeze of a zero-sized dimension).
+  if (idx_ < 0 || idx_ >= axis_size) {
+    std::ostringstream msg;
+    msg << "[index] Index " << orig << " is out of bounds for axis with size "
+        << axis_size << ".";
+    throw std::out_of_range(msg.str());
+  }
   return mx::array(idx_, mx::uint32);
 }
 
@@ -406,7 +415,17 @@ mx::array mlx_get_item_nd(mx::array src, const nb::tuple& entries) {
       if (!idx.is_none()) {
         if (!have_array && is_index_scalar(idx)) {
           int st = safe_to_int32(idx);
+          int orig = st;
           st = (st < 0) ? st + src.shape(axis) : st;
+          // Bounds-check before forming the slice; otherwise an
+          // out-of-range index would yield a degenerate slice and surface
+          // as an unrelated downstream error.
+          if (st < 0 || st >= src.shape(axis)) {
+            std::ostringstream msg;
+            msg << "[index] Index " << orig << " is out of bounds for axis "
+                << axis << " with size " << src.shape(axis) << ".";
+            throw std::out_of_range(msg.str());
+          }
 
           starts[axis] = st;
           ends[axis] = st + 1;
